@@ -26,6 +26,12 @@ export default function EmployerDashboard() {
   const [activeTab, setActiveTab] = useState("employees");
   const [addDialogOpen, setAddDialogOpen] = useState(false);
   const [isOwner, setIsOwner] = useState(false);
+  const [stats, setStats] = useState({
+    totalEmployees: 0,
+    activeEmployees: 0,
+    totalPayrolls: 0,
+    loaded: false,
+  });
 
   const checkOwner = useCallback(async () => {
     if (!payGramCore || !address) {
@@ -33,8 +39,8 @@ export default function EmployerDashboard() {
       return;
     }
     try {
-      const owner: string = await payGramCore.owner();
-      setIsOwner(owner.toLowerCase() === address.toLowerCase());
+      const emp: string = await payGramCore.employer();
+      setIsOwner(emp.toLowerCase() === address.toLowerCase());
     } catch {
       setIsOwner(false);
     }
@@ -43,6 +49,29 @@ export default function EmployerDashboard() {
   useEffect(() => {
     checkOwner();
   }, [checkOwner]);
+
+  const fetchStats = useCallback(async () => {
+    if (!payGramCore) return;
+    try {
+      const [total, active, payrolls] = await Promise.all([
+        payGramCore.employeeCount(),
+        payGramCore.activeEmployeeCount(),
+        payGramCore.totalPayrollsExecuted(),
+      ]);
+      setStats({
+        totalEmployees: Number(total),
+        activeEmployees: Number(active),
+        totalPayrolls: Number(payrolls),
+        loaded: true,
+      });
+    } catch {
+      // Keep defaults on error
+    }
+  }, [payGramCore]);
+
+  useEffect(() => {
+    if (contractsReady) fetchStats();
+  }, [contractsReady, fetchStats]);
 
   const showDashboard = isConnected && isSupportedChain;
 
@@ -114,29 +143,25 @@ export default function EmployerDashboard() {
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mt-8 mb-8">
         <StatCard
           title="Total Employees"
-          value={showDashboard && contractsReady ? "..." : MOCK_STATS.totalEmployees}
+          value={stats.loaded ? stats.totalEmployees : MOCK_STATS.totalEmployees}
           icon={Users}
           accentColor="primary"
         />
         <StatCard
-          title="Active Payrolls"
-          value={showDashboard && contractsReady ? "..." : MOCK_STATS.totalPayrolls}
+          title="Active Employees"
+          value={stats.loaded ? stats.activeEmployees : MOCK_STATS.activeEmployees}
           icon={DollarSign}
           accentColor="secondary"
         />
         <StatCard
-          title="Total Distributed"
-          value={
-            showDashboard && contractsReady
-              ? "..."
-              : `${MOCK_STATS.totalDistributed} cUSDC`
-          }
+          title="Payrolls Executed"
+          value={stats.loaded ? stats.totalPayrolls : MOCK_STATS.totalPayrolls}
           icon={Wallet}
           accentColor="primary"
         />
         <StatCard
           title="Avg Trust Score"
-          value={showDashboard && contractsReady ? "..." : MOCK_STATS.avgTrustScore}
+          value={stats.loaded ? "Encrypted" : MOCK_STATS.avgTrustScore}
           icon={Shield}
           accentColor="warning"
         />

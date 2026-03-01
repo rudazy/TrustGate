@@ -96,7 +96,7 @@ export default function EmployeeList({ onAddEmployee, isOwner }: EmployeeListPro
     : employees;
 
   function isMock(item: EmployeeData | MockEmployee): item is MockEmployee {
-    return "tier" in item;
+    return "address" in item && !("wallet" in item);
   }
 
   return (
