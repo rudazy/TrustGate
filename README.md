@@ -37,8 +37,8 @@ There is no on-chain rail where an agent can be paid per action at its true marg
 
 TrustGate combines two primitives:
 
-1. **On-chain trust scoring** — every registered agent carries a reputation score (0–100) maintained by authorized oracles. Score buckets map to trust tiers: **HIGH**, **MEDIUM**, **LOW**.
-2. **Circle Nanopayments on Arc** — Arc is Circle's purpose-built L1 for USDC settlement, supporting per-transaction costs in the sub-cent range. USDC is native, gas is negligible, and finality is fast.
+1. **On-chain trust scoring**: every registered agent carries a reputation score (0–100) maintained by authorized oracles. Score buckets map to trust tiers: **HIGH**, **MEDIUM**, **LOW**.
+2. **Circle Nanopayments on Arc**: Arc is Circle's purpose-built L1 for USDC settlement, supporting per-transaction costs in the sub-cent range. USDC is native, gas is negligible, and finality is fast.
 
 The combination produces a system where:
 
