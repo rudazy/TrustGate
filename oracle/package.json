@@ -1,0 +1,29 @@
+{
+  "name": "trustgate-oracle",
+  "version": "1.0.0",
+  "description": "TrustGate public payable trust oracle on Arc testnet",
+  "main": "dist/server.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "dev": "ts-node server.ts"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "cors": "^2.8.5",
+    "express-rate-limit": "^7.4.0",
+    "viem": "^2.21.0",
+    "axios": "^1.7.4",
+    "dotenv": "^16.4.5"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/cors": "^2.8.17",
+    "@types/node": "^20.14.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.5.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
