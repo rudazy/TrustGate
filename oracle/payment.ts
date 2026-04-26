@@ -108,7 +108,9 @@ export async function verifyPayment(
   if (!header.txHash || !header.nonce || !header.from) {
     return { ok: false, reason: 'X-Payment header missing required fields: txHash, nonce, from' };
   }
-  if (header.network !== 'arc-testnet') {
+
+  const ALLOWED_NETWORKS = ['arc-testnet', 'Arc Testnet'];
+  if (!header.network || !ALLOWED_NETWORKS.includes(header.network)) {
     return { ok: false, reason: `unsupported network: ${header.network}` };
   }
 
