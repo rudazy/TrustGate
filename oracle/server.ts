@@ -5,6 +5,7 @@ import rateLimit from 'express-rate-limit';
 import { scoreAddress } from './scoring';
 import { paymentRequirement, verifyPayment } from './payment';
 import { recordQuery, publicStats } from './stats';
+import { lookup as tokenLookup, startBackgroundRefresher } from './token-cache';
 
 const PORT = Number(process.env.PORT || 3001);
 const QUERY_PRICE = '0.001';
@@ -83,6 +84,44 @@ app.get('/agent-status', (_req: Request, res: Response) => {
 function isHexAddress(s: string): boolean {
   return /^0x[0-9a-fA-F]{40}$/.test(s);
 }
+
+const TOKEN_PRICE = '0.001';
+
+app.get('/oracle/token/:address', async (req: Request, res: Response) => {
+  const { address } = req.params;
+  if (!isHexAddress(address)) {
+    return res.status(400).json({ error: 'invalid address' });
+  }
+
+  const paymentHeader = req.header('x-payment') || req.header('X-Payment');
+
+  if (!paymentHeader) {
+    return res.status(402).json({
+      error: 'Payment required',
+      ...paymentRequirement(TOKEN_PRICE, 'TrustGate Token Oracle query fee'),
+    });
+  }
+
+  const payment = await verifyPayment(paymentHeader, TOKEN_PRICE);
+  if (!payment.ok) {
+    return res.status(402).json({
+      error: 'Payment verification failed',
+      reason: payment.reason,
+      ...paymentRequirement(TOKEN_PRICE, 'TrustGate Token Oracle query fee'),
+    });
+  }
+
+  try {
+    const result = tokenLookup(address);
+    if (result.kind === 'pending') {
+      return res.status(202).json(result.data);
+    }
+    return res.json(result.data);
+  } catch (err) {
+    console.error('[oracle] token scoring failed:', (err as Error).message);
+    return res.status(500).json({ error: 'token scoring failed', detail: (err as Error).message });
+  }
+});
 
 app.get('/oracle/:address', async (req: Request, res: Response) => {
   const { address } = req.params;
@@ -203,4 +242,5 @@ process.on('uncaughtException', (err) => {
 app.listen(PORT, () => {
   console.log(`[oracle] TrustGate Oracle v1 listening on :${PORT}`);
   console.log(`[oracle] price per query: ${QUERY_PRICE} USDC`);
+  startBackgroundRefresher();
 });
