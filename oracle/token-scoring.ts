@@ -137,6 +137,28 @@ async function fetchDeployer(tokenAddress: string): Promise<string | null> {
   }
 }
 
+interface AddressCounters {
+  transactionsCount: number;
+  tokenTransfersCount: number;
+}
+
+async function fetchAddressCounters(address: string): Promise<AddressCounters> {
+  try {
+    const url = `${ARCSCAN_API_URL}/api/v2/addresses/${address}/counters`;
+    const res = await axios.get<{
+      transactions_count?: string | number;
+      token_transfers_count?: string | number;
+    }>(url, { timeout: 8000 });
+    return {
+      transactionsCount: Number(res.data.transactions_count || 0),
+      tokenTransfersCount: Number(res.data.token_transfers_count || 0),
+    };
+  } catch (err) {
+    console.error(`[token-scoring] counters fetch failed: ${(err as Error).message}`);
+    return { transactionsCount: 0, tokenTransfersCount: 0 };
+  }
+}
+
 // ----- core scoring -----
 
 interface BuyerInfo {
@@ -257,18 +279,43 @@ function detectCoordinatedBuying(buyers: BuyerInfo[]): boolean {
 }
 
 interface ContractSignificance {
-  multiplier: number; // 1.0 = neutral, >1 = boost
+  multiplier: number; // 1.0 = neutral, up to 10x for systemically important contracts
+  reason: string;
 }
 
+/**
+ * Significance multiplier per spec:
+ *   holder_count > 50    → 2x
+ *   transactions > 500   → 3x
+ *   transactions > 10000 → 10x
+ *   max wins (these are tiers, not stackable). Hard cap 10x.
+ *
+ * USDC at 0x3600...0000 has thousands of holders and millions of txs, so it
+ * hits the 10x tier unconditionally — independent of deployer (which is null
+ * for system precompiles, handled separately in computeTokenScore).
+ */
 function contractSignificance(opts: {
   holderCount: number;
-  transferCount: number;
+  transactionsCount: number;
 }): ContractSignificance {
+  const reasons: string[] = [];
   let mult = 1.0;
-  if (opts.holderCount >= 50) mult += 0.25;
-  if (opts.transferCount >= 500) mult += 0.25;
-  // Cap at 1.5x so a single-deployer wallet score can't dominate
-  return { multiplier: Math.min(mult, 1.5) };
+
+  if (opts.transactionsCount > 10_000) {
+    mult = Math.max(mult, 10);
+    reasons.push('tx>10000');
+  }
+  if (opts.transactionsCount > 500) {
+    mult = Math.max(mult, 3);
+    reasons.push('tx>500');
+  }
+  if (opts.holderCount > 50) {
+    mult = Math.max(mult, 2);
+    reasons.push('holders>50');
+  }
+
+  if (mult > 10) mult = 10;
+  return { multiplier: mult, reason: reasons.join(',') || 'baseline' };
 }
 
 function tierFor(score: number): TokenTier {
@@ -288,6 +335,8 @@ export interface ComputedTokenScore {
     botFlagged: boolean;
     holderCount: number;
     transferCount: number;
+    transactionsCount: number;
+    significanceMultiplier: number;
   };
 }
 
@@ -298,12 +347,17 @@ export async function computeTokenScore(
 ): Promise<ComputedTokenScore> {
   const address = getAddress(rawAddress);
 
-  const [info, holders, transfers, deployer] = await Promise.all([
+  const [info, holders, transfers, deployer, counters] = await Promise.all([
     fetchTokenInfo(address),
     fetchHolders(address),
     fetchAllTransfers(address),
     fetchDeployer(address),
+    fetchAddressCounters(address),
   ]);
+
+  // Authoritative holder count from token endpoint, fallback to fetched array
+  const reportedHolderCount = Number(info?.holders || 0);
+  const effectiveHolderCount = Math.max(reportedHolderCount, holders.length);
 
   const buyers = await classifyHolders(holders, transfers, deployer, address);
   const purchased = buyers.filter((b) => b.isPurchased);
@@ -333,21 +387,33 @@ export async function computeTokenScore(
     buyerPoints += botFlagged ? w * BOT_PENALTY : w;
   }
 
-  // Deployer score × contract-significance multiplier
+  // Significance multiplier — driven by token's own onchain footprint
+  const sig = contractSignificance({
+    holderCount: effectiveHolderCount,
+    transactionsCount: counters.transactionsCount,
+  });
+
+  // Deployer contribution. For system precompiles like native USDC at
+  // 0x3600...0000, there is no deployer — but the contract's own footprint
+  // is what makes it trustworthy. In that case, treat the contract itself as
+  // a "deployer-equivalent" with a max-trust baseline, scaled by significance.
   let deployerPoints = 0;
+  let usedDeployerFallback = false;
   if (deployer) {
     try {
       const ds = await scoreAddress(deployer);
-      const sig = contractSignificance({
-        holderCount: holders.length,
-        transferCount: transfers.length,
-      });
-      // Deployer contributes up to ~30 points, scaled by their wallet score.
-      // 100-score deployer with 1.5x multiplier = 45 pts; baseline (50, 1.0x) = 15 pts.
+      // Deployer contributes proportional to wallet score × significance.
+      // 100-score deployer with 10x mult would maxout — clamped via final cap.
       deployerPoints = (ds.score / 100) * 30 * sig.multiplier;
     } catch (err) {
       console.error(`[token-scoring] deployer score failed: ${(err as Error).message}`);
     }
+  } else if (sig.multiplier >= 3) {
+    // No deployer (system contract / precompile / unindexed creation) but the
+    // contract itself is significant. Use its significance as a trust signal.
+    // Baseline = 30 pts × multiplier, capped naturally by the 0..100 final clamp.
+    usedDeployerFallback = true;
+    deployerPoints = 30 * sig.multiplier;
   }
 
   // Combine — clamp to 0..100
@@ -356,6 +422,13 @@ export async function computeTokenScore(
   if (score < 0) score = 0;
   // If no purchased holders at all and no deployer trust, hard zero
   if (purchased.length === 0 && deployerPoints === 0) score = 0;
+
+  console.log(
+    `[token-scoring] ${address} score=${score} buyers=${buyerPoints.toFixed(1)} ` +
+      `deployer=${deployerPoints.toFixed(1)} sig=${sig.multiplier}x (${sig.reason})` +
+      (usedDeployerFallback ? ' [precompile-fallback]' : '') +
+      (botFlagged ? ' [bot-flagged]' : '')
+  );
 
   // Trend
   let trend: Trend = 'stable';
@@ -379,8 +452,10 @@ export async function computeTokenScore(
       rawBuyerScore: buyerPoints,
       rawDeployerScore: deployerPoints,
       botFlagged,
-      holderCount: holders.length,
+      holderCount: effectiveHolderCount,
       transferCount: transfers.length,
+      transactionsCount: counters.transactionsCount,
+      significanceMultiplier: sig.multiplier,
     },
   };
 }
